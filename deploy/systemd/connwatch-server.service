@@ -1,0 +1,17 @@
+[Unit]
+Description=Connwatch Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/connwatch
+ExecStart=/opt/connwatch/server/cmd/server/connwatch-server /opt/connwatch/server/config.yaml
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

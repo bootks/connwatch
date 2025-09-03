@@ -1,0 +1,13 @@
+# Go
+bin/
+*.exe
+*.test
+*.out
+coverage.*
+# Local configs & secrets
+**/config.yaml
+/etc/connwatch-agent.yaml
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

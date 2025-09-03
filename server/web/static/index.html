@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>connwatch</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu; margin: 0; background:#0b0f14; color:#e5e7eb; }
+    header { padding: 12px 16px; background:#111827; position: sticky; top:0; display:flex; align-items:center; gap: 16px;}
+    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .green { background:#064e3b; color:#a7f3d0; }
+    .orange { background:#7c2d12; color:#fdba74; }
+    .red { background:#7f1d1d; color:#fecaca; }
+    main { padding: 16px; display:grid; grid-template-columns: 1fr; gap:16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #1f2937; text-align:left; }
+    tr:hover { background:#111827; }
+    .card { background:#0f172a; border:1px solid #1f2937; border-radius: 12px; overflow:hidden; }
+    h2 { margin: 0; padding: 12px 16px; border-bottom:1px solid #1f2937; font-size: 16px; }
+    .muted { color:#9ca3af; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>connwatch</strong>
+    <span class="pill orange" id="orangeCount">0 ORANGE</span>
+    <span class="pill red" id="redCount">0 ROUGE</span>
+    <span class="pill green" id="nodeCount">0 NODES</span>
+    <span class="muted" id="lastRefresh"></span>
+  </header>
+  <main>
+    <div class="card">
+      <h2>Rouge maintenant</h2>
+      <table id="redTable">
+        <thead><tr><th>Heure</th><th>Hôte</th><th>Règle</th><th>Détail</th><th>Process</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Orange (30 dernières minutes)</h2>
+      <table id="orangeTable">
+        <thead><tr><th>Heure</th><th>Hôte</th><th>Règle</th><th>Détail</th><th>Process</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Nœuds</h2>
+      <table id="nodesTable">
+        <thead><tr><th>Hôte</th><th>Tags</th><th>IP</th><th>Vu</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+<script>
+let lastTs = Math.floor(Date.now()/1000)-1800;
+
+function fmt(ts){
+  const d = new Date(ts*1000);
+  return d.toLocaleTimeString();
+}
+
+async function refresh(){
+  const [nodes, events] = await Promise.all([
+    fetch('/api/nodes').then(r=>r.json()),
+    fetch('/api/events?since='+lastTs).then(r=>r.json())
+  ]);
+  const now = Math.floor(Date.now()/1000);
+  lastTs = now - 1800;
+
+  const nt = document.querySelector('#nodesTable tbody');
+  nt.innerHTML = '';
+  for (const n of nodes){
+    const tr = document.createElement('tr');
+    const ip = n.ip4 || n.ip6 || '';
+    const seen = Math.max(0, now - (n.last_ts||0));
+    tr.innerHTML = `<td>${n.host}</td><td>${(n.tags||[]).join(', ')}</td><td>${ip}</td><td>${seen}s</td>`;
+    nt.appendChild(tr);
+  }
+  document.getElementById('nodeCount').textContent = nodes.length + " NODES";
+
+  const red = events.filter(e => e.level === "RED");
+  const orange = events.filter(e => e.level === "ORANGE");
+  document.getElementById('redCount').textContent = red.length + " ROUGE";
+  document.getElementById('orangeCount').textContent = orange.length + " ORANGE";
+
+  function fill(tableId, arr){
+    const tb = document.querySelector(tableId+' tbody');
+    tb.innerHTML = '';
+    arr.sort((a,b)=>b.ts-a.ts);
+    for (const e of arr){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${fmt(e.ts)}</td><td>${e.host}</td><td>${e.rule}</td><td>${e.detail}</td><td>${e.exe||""}</td>`;
+      tb.appendChild(tr);
+    }
+  }
+  fill('#redTable', red);
+  fill('#orangeTable', orange);
+  document.getElementById('lastRefresh').textContent = "MAJ " + new Date().toLocaleTimeString();
+}
+setInterval(refresh, 4000);
+refresh();
+</script>
+</body>
+</html>

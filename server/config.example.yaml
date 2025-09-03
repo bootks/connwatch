@@ -1,0 +1,17 @@
+# connwatch server configuration
+listen_addr: ":8080"
+auth_token: "change-me"
+adguard_url: ""
+adguard_token: ""
+internal_cidrs: ["127.0.0.0/8","192.168.0.0/16","10.0.0.0/8","172.16.0.0/12","fd00::/8"]
+allow_out_ports: [80,443,853,22,123,1935]
+doh_hosts: ["cloudflare-dns.com","dns.google","dns.quad9.net","doh.opendns.com","dns.adguard.com"]
+lan_policy:
+  ldap: [389,636]
+  dns: [53]
+  dhcp: [67,68]
+  jellyfin: [8096,8920]
+storage:
+  type: "memory"
+  path: "/var/lib/connwatch/connwatch.db"
+  retention_days: 7
