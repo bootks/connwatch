@@ -33,3 +33,10 @@ sudo useradd -r -s /usr/sbin/nologin connwatch || true
 sudo install -m0640 agent/config.example.yaml  /etc/connwatch-agent.yaml
 sudo install -m0644 server/config.example.yaml /etc/connwatch-server.yaml
 sudo chown connwatch:connwatch /etc/connwatch-server.yaml
+
+(Optionnel) Process visibles sous user connwatch
+Par défaut, Linux limite ss -p aux process du même utilisateur. Pour voir tous les process sans root :
+sudo install -d -m0755 /usr/local/lib/connwatch
+sudo cp /usr/bin/ss /usr/local/lib/connwatch/ss
+sudo setcap cap_net_admin,cap_net_raw+ep /usr/local/lib/connwatch/ss
+getcap /usr/local/lib/connwatch/ss  # doit afficher les deux cap
