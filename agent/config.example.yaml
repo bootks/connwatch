@@ -1,7 +1,27 @@
-# connwatch agent configuration
-server_url: "http://SERVER_IP_OR_DNS:8080"
+# === Connwatch Agent (example) ===
+server_url: http://127.0.0.1:8080
 auth_token: "change-me"
-host_id: "auto"
-tags: ["home","linux"]
-interval_sec: 15
+host_id: auto
+tags: ["default","linux"]
+
+# Zero-loss sampling
+# Fréquence du sampler rapide (ms)
+sample_interval_ms: 1000
+# Fréquence d'upload des lots (s)
+upload_interval_sec: 15
+# Si un flux n'est plus revu pendant ce délai (ms), on le considère "fermé"
+stale_grace_ms: 1500
+
+# Spool local si le serveur est indisponible
+spool_path: "/var/lib/connwatch/agent.spool"
+spool_max_mb: 10
+
+# Réseau / IP préféré pour la télémétrie
 preferred_iface: ""
+
+# Binaire ss (optionnel). Pour voir "Process" sous user connwatch :
+#  1) copie /usr/bin/ss vers /usr/local/lib/connwatch/ss
+#  2) sudo setcap cap_net_admin,cap_net_raw+ep /usr/local/lib/connwatch/ss
+#  3) vérifie: getcap /usr/local/lib/connwatch/ss
+#  4) laisse ce champ vide si tu relies via $PATH (service systemd l'ajoute déjà)
+ss_path: ""
