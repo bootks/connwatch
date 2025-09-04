@@ -34,9 +34,29 @@ sudo install -m0640 agent/config.example.yaml  /etc/connwatch-agent.yaml
 sudo install -m0644 server/config.example.yaml /etc/connwatch-server.yaml
 sudo chown connwatch:connwatch /etc/connwatch-server.yaml
 
-(Optionnel) Process visibles sous user connwatch
-Par défaut, Linux limite ss -p aux process du même utilisateur. Pour voir tous les process sans root :
+## (Optionnel) Process visibles sous user connwatch
+## Par défaut, Linux limite ss -p aux process du même utilisateur. Pour voir tous les process sans root :
 sudo install -d -m0755 /usr/local/lib/connwatch
 sudo cp /usr/bin/ss /usr/local/lib/connwatch/ss
 sudo setcap cap_net_admin,cap_net_raw+ep /usr/local/lib/connwatch/ss
 getcap /usr/local/lib/connwatch/ss  # doit afficher les deux cap
+
+# Users + confs
+sudo useradd -r -s /usr/sbin/nologin connwatch || true
+sudo install -m0755 agent/cmd/agent/connwatch-agent   /usr/local/bin/
+sudo install -m0755 server/cmd/server/connwatch-server /usr/local/bin/
+sudo install -m0640 agent/config.example.yaml  /etc/connwatch-agent.yaml
+sudo install -m0644 server/config.example.yaml /etc/connwatch-server.yaml
+sudo chown connwatch:connwatch /etc/connwatch-server.yaml
+
+# (optionnel) ss avec capabilities
+sudo install -d -m0755 /usr/local/lib/connwatch
+sudo cp /usr/bin/ss /usr/local/lib/connwatch/ss
+sudo setcap cap_net_admin,cap_net_raw+ep /usr/local/lib/connwatch/ss
+
+# Systemd
+sudo install -m0644 deploy/systemd/connwatch-agent.service  /etc/systemd/system/
+sudo install -m0644 deploy/systemd/connwatch-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now connwatch-server connwatch-agent
+
