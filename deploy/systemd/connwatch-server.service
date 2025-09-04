@@ -1,17 +1,46 @@
 [Unit]
-Description=Connwatch Server
-After=network-online.target
+Description=Connwatch Server (API + UI)
 Wants=network-online.target
+After=network-online.target
 
 [Service]
-WorkingDirectory=/opt/connwatch
-ExecStart=/opt/connwatch/server/cmd/server/connwatch-server /opt/connwatch/server/config.yaml
-Restart=always
-RestartSec=3
+Type=simple
+User=connwatch
+Group=connwatch
+
+# Binaire + conf
+ExecStart=/usr/local/bin/connwatch-server /etc/connwatch-server.yaml
+WorkingDirectory=/var/lib/connwatch
+
+# UI personnalisée (décommente et pointe vers ton index si besoin)
+# Environment=CONNWATCH_UI_INDEX=/opt/connwatch/index.html
+
+Restart=on-failure
+RestartSec=2s
+
+# Sandboxing
 NoNewPrivileges=yes
-ProtectSystem=full
-ProtectHome=yes
 PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Écriture locale si besoin
+StateDirectory=connwatch
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/connwatch
+
+LimitNOFILE=8192
 
 [Install]
 WantedBy=multi-user.target
