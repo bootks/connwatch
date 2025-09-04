@@ -1,50 +1,62 @@
-# connwatch (v0.1.1 • MVP + correctifs)
+# connwatch
 
-Agent léger + serveur web pour superviser **les connexions réseau** par hôte, classées **VERT / ORANGE / ROUGE**.
-Correctifs : parsing commentaires inline côté agent ; loopback considéré interne ; `/api/health` ; logs HTTP avec codes ; UI servie sans dépendre du répertoire courant.
+Petit outil maison pour **superviser les connexions réseau** et mettre en avant ce qui est **suspect** (ORANGE/RED) sans se noyer dans la config.
 
-## Build (Go 1.21+)
+- Agent léger (Linux) : collecte via `ss`, **sampler rapide** (ms) + **upload en lot** (s), **zéro-perte** des connexions éphémères.
+- Serveur HTTP : endpoints JSON (`/api/*`), règles simples (ports, DoH, latéralisation), UI statique.
+
+## Fonctionnalités
+
+- Classement GREEN / ORANGE / RED (ports inattendus, DoH, latéral admin LAN).
+- **Process** (exe/pid) quand possible.
+- **Zéro-perte** : connexions brèves captées même entre deux refreshs.
+- UI statique embarquée (ou **index custom** via `CONNWATCH_UI_INDEX`).
+
+---
+
+## Installation rapide (build from source)
 
 ```bash
-cd ~/connwatch
-go mod init connwatch || true
+# Prérequis Go 1.22+
 go mod tidy
 
-cd agent/cmd/agent && go build -o connwatch-agent
-cd ../../../server/cmd/server && go build -o connwatch-server
-```
+# Build
+( cd agent/cmd/agent  && go build -o connwatch-agent )
+( cd server/cmd/server && go build -o connwatch-server )
 
-## Serveur
+# Install
+sudo install -m0755 agent/cmd/agent/connwatch-agent   /usr/local/bin/
+sudo install -m0755 server/cmd/server/connwatch-server /usr/local/bin/
 
-```bash
-cd ~/connwatch
-cp server/config.example.yaml server/config.yaml
-# Éditez auth_token et vérifiez internal_cidrs inclut "127.0.0.0/8"
-./server/cmd/server/connwatch-server server/config.yaml
-# UI : http://<serveur>:8080/
-```
-
-## Agent
-
-```bash
+# Users & confs
 sudo useradd -r -s /usr/sbin/nologin connwatch || true
-sudo cp agent/cmd/agent/connwatch-agent /usr/local/bin/
-sudo cp agent/config.example.yaml /etc/connwatch-agent.yaml
-sudo nano /etc/connwatch-agent.yaml
-# server_url: "http://<IP_SERVEUR>:8080"
-# auth_token: <le même que côté serveur>
-# host_id: auto
-# tags: ["home","linux"]
+sudo install -m0640 agent/config.example.yaml  /etc/connwatch-agent.yaml
+sudo install -m0644 server/config.example.yaml /etc/connwatch-server.yaml
+sudo chown connwatch:connwatch /etc/connwatch-server.yaml
 
-sudo cp deploy/systemd/connwatch-agent.service /etc/systemd/system/
+## (Optionnel) Process visibles sous user connwatch
+## Par défaut, Linux limite ss -p aux process du même utilisateur. Pour voir tous les process sans root :
+sudo install -d -m0755 /usr/local/lib/connwatch
+sudo cp /usr/bin/ss /usr/local/lib/connwatch/ss
+sudo setcap cap_net_admin,cap_net_raw+ep /usr/local/lib/connwatch/ss
+getcap /usr/local/lib/connwatch/ss  # doit afficher les deux cap
+
+# Users + confs
+sudo useradd -r -s /usr/sbin/nologin connwatch || true
+sudo install -m0755 agent/cmd/agent/connwatch-agent   /usr/local/bin/
+sudo install -m0755 server/cmd/server/connwatch-server /usr/local/bin/
+sudo install -m0640 agent/config.example.yaml  /etc/connwatch-agent.yaml
+sudo install -m0644 server/config.example.yaml /etc/connwatch-server.yaml
+sudo chown connwatch:connwatch /etc/connwatch-server.yaml
+
+# (optionnel) ss avec capabilities
+sudo install -d -m0755 /usr/local/lib/connwatch
+sudo cp /usr/bin/ss /usr/local/lib/connwatch/ss
+sudo setcap cap_net_admin,cap_net_raw+ep /usr/local/lib/connwatch/ss
+
+# Systemd
+sudo install -m0644 deploy/systemd/connwatch-agent.service  /etc/systemd/system/
+sudo install -m0644 deploy/systemd/connwatch-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now connwatch-agent
-```
+sudo systemctl enable --now connwatch-server connwatch-agent
 
-## Tests rapides
-
-```bash
-curl -s http://127.0.0.1:8080/api/health | jq
-curl -s http://127.0.0.1:8080/api/nodes | jq
-curl -s http://127.0.0.1:8080/api/events | jq
-```

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,11 +23,19 @@ type AgentConfig struct {
 	AuthToken      string   `json:"auth_token"`
 	HostID         string   `json:"host_id"`
 	Tags           []string `json:"tags"`
-	IntervalSec    int      `json:"interval_sec"`
+	IntervalSec    int      `json:"interval_sec"` // rétro-compat (si upload_interval_sec absent)
 	PreferredIface string   `json:"preferred_iface"`
-	SSPath         string   `json:"ss_path"` // optionnel: chemin absolu vers ss (ex: /usr/local/lib/connwatch/ss)
+	SSPath         string   `json:"ss_path"`
+
+	// Zéro-perte
+	SampleIntervalMS  int    `json:"sample_interval_ms"`
+	UploadIntervalSec int    `json:"upload_interval_sec"`
+	StaleGraceMS      int    `json:"stale_grace_ms"`
+	SpoolPath         string `json:"spool_path"`
+	SpoolMaxMB        int    `json:"spool_max_mb"`
 }
 
+// Conn: format instantané (compat, pas utilisé par la voie "observed")
 type Conn struct {
 	Proto string `json:"proto"`
 	Laddr string `json:"laddr"`
@@ -40,13 +50,41 @@ type Payload struct {
 	Host   string   `json:"host"`
 	Tags   []string `json:"tags"`
 	TS     int64    `json:"ts"`
-	Conns  []Conn   `json:"conns"`
+	Conns  []Conn   `json:"conns,omitempty"`
 	IP4    string   `json:"ip4"`
 	IP6    string   `json:"ip6"`
-	Errors []string `json:"errors"`
+	Errors []string `json:"errors,omitempty"`
+
+	Observed []Observed `json:"observed,omitempty"`
 }
 
-// --- helpers config (parser YAML minimal avec suppression des commentaires inline) ---
+// ---- Observed flows (zéro-perte) ----
+
+type FlowKey struct {
+	Proto, Laddr, Raddr string
+	Lport, Rport, Pid   int
+}
+
+type Observed struct {
+	Proto   string `json:"proto"`
+	Laddr   string `json:"laddr"`
+	Lport   int    `json:"lport"`
+	Raddr   string `json:"raddr"`
+	Rport   int    `json:"rport"`
+	Pid     int    `json:"pid"`
+	Exe     string `json:"exe"`
+	FirstTs int64  `json:"first_ts"` // ms epoch
+	LastTs  int64  `json:"last_ts"`  // ms epoch
+	Samples int    `json:"samples"`
+}
+
+type liveFlow struct {
+	Observed
+	lastSeen int64 // ms
+	closed   bool
+}
+
+// ---- helpers config (parser YAML minimal + suppression commentaires inline) ----
 
 func stripInlineComment(s string) string {
 	if i := strings.Index(s, "#"); i >= 0 {
@@ -78,7 +116,13 @@ func loadConfig(path string) (AgentConfig, error) {
 	if err != nil {
 		return AgentConfig{}, err
 	}
-	cfg := AgentConfig{IntervalSec: 15}
+	cfg := AgentConfig{
+		IntervalSec:       15,
+		SampleIntervalMS:  1000,
+		UploadIntervalSec: 15,
+		StaleGraceMS:      1500,
+		SpoolMaxMB:        10,
+	}
 	lines := strings.Split(string(b), "\n")
 	for _, raw := range lines {
 		ln := strings.TrimSpace(stripInlineComment(raw))
@@ -90,8 +134,7 @@ func loadConfig(path string) (AgentConfig, error) {
 			continue
 		}
 		key := strings.TrimSpace(kv[0])
-		val := strings.TrimSpace(kv[1])
-		val = strings.Trim(val, `"'`)
+		val := strings.Trim(strings.TrimSpace(kv[1]), `"'`)
 		switch key {
 		case "server_url":
 			cfg.ServerURL = val
@@ -109,6 +152,24 @@ func loadConfig(path string) (AgentConfig, error) {
 			cfg.PreferredIface = val
 		case "ss_path":
 			cfg.SSPath = val
+		case "sample_interval_ms":
+			if n, e := strconv.Atoi(val); e == nil {
+				cfg.SampleIntervalMS = n
+			}
+		case "upload_interval_sec":
+			if n, e := strconv.Atoi(val); e == nil {
+				cfg.UploadIntervalSec = n
+			}
+		case "stale_grace_ms":
+			if n, e := strconv.Atoi(val); e == nil {
+				cfg.StaleGraceMS = n
+			}
+		case "spool_path":
+			cfg.SpoolPath = val
+		case "spool_max_mb":
+			if n, e := strconv.Atoi(val); e == nil {
+				cfg.SpoolMaxMB = n
+			}
 		}
 	}
 	if cfg.ServerURL == "" || cfg.AuthToken == "" {
@@ -124,10 +185,7 @@ func loadConfig(path string) (AgentConfig, error) {
 	return cfg, nil
 }
 
-// --- Parsing robuste de `ss -H -tuapn` ---
-// 1) détecte proto au début (tcp/udp)
-// 2) extrait les deux premiers couples addr:port (IPv4/IPv6, [::...], [::ffff:...], *:*)
-// 3) extrait le premier process listé dans users:((...))
+// ---- Parsing robuste de `ss -H -tuapn` ----
 
 var protoRx = regexp.MustCompile(`^(tcp|udp)\b`)
 var addrPortAllRx = regexp.MustCompile(`\[(?P<a1>[0-9a-fA-F:%.]+)\]:(?P<p1>[0-9*]+)|(?P<a2>[0-9a-fA-F.*:%]+):(?P<p2>[0-9*]+)`)
@@ -159,14 +217,12 @@ func parseSS(output []byte) []Conn {
 	for sc.Scan() {
 		ln := sc.Text()
 
-		// 1) proto
 		pm := protoRx.FindStringSubmatch(ln)
 		if pm == nil {
 			continue
 		}
 		proto := pm[1]
 
-		// 2) addr:port x2
 		matches := addrPortAllRx.FindAllStringSubmatch(ln, -1)
 		if len(matches) < 2 {
 			continue
@@ -174,7 +230,6 @@ func parseSS(output []byte) []Conn {
 		laddr, lport := extractAddrPort(matches[0])
 		raddr, rport := extractAddrPort(matches[1])
 
-		// 3) process
 		exe := ""
 		pid := 0
 		if pm2 := procRx.FindStringSubmatch(ln); pm2 != nil {
@@ -191,6 +246,193 @@ func parseSS(output []byte) []Conn {
 		})
 	}
 	return conns
+}
+
+// ---- Agent runtime (sampler + uploader + spool) ----
+
+type Agent struct {
+	cfg    AgentConfig
+	client *http.Client
+	ssBin  string
+
+	mu     sync.Mutex
+	flows  map[FlowKey]*liveFlow // vivants + récemment fermés
+	outbox []Observed            // à uploader au prochain batch
+}
+
+func NewAgent(cfg AgentConfig) *Agent {
+	ss := cfg.SSPath
+	if ss == "" {
+		ss = "ss"
+	}
+	return &Agent{
+		cfg:    cfg,
+		client: &http.Client{Timeout: 10 * time.Second},
+		ssBin:  ss,
+		flows:  map[FlowKey]*liveFlow{},
+		outbox: []Observed{},
+	}
+}
+
+func (a *Agent) sampleOnce(nowMS int64) []string {
+	errs := []string{}
+	out, err := exec.Command(a.ssBin, "-H", "-tuapn").Output()
+	if err != nil {
+		return []string{"ss failed: " + err.Error()}
+	}
+	conns := parseSS(out)
+
+	seen := map[FlowKey]bool{}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for _, c := range conns {
+		k := FlowKey{Proto: c.Proto, Laddr: c.Laddr, Lport: c.Lport, Raddr: c.Raddr, Rport: c.Rport, Pid: c.Pid}
+		seen[k] = true
+		if lf, ok := a.flows[k]; ok {
+			lf.LastTs = nowMS
+			lf.Samples++
+			if lf.Exe == "" && c.Exe != "" {
+				lf.Exe = c.Exe
+			}
+			lf.lastSeen = nowMS
+			lf.closed = false
+			continue
+		}
+		a.flows[k] = &liveFlow{
+			Observed: Observed{
+				Proto: c.Proto, Laddr: c.Laddr, Lport: c.Lport,
+				Raddr: c.Raddr, Rport: c.Rport, Pid: c.Pid, Exe: c.Exe,
+				FirstTs: nowMS, LastTs: nowMS, Samples: 1,
+			},
+			lastSeen: nowMS,
+		}
+	}
+
+	grace := int64(a.cfg.StaleGraceMS)
+	if grace < 500 {
+		grace = 500
+	}
+	for k, lf := range a.flows {
+		if seen[k] {
+			continue
+	}
+		if !lf.closed && nowMS-lf.lastSeen >= grace {
+			lf.closed = true
+			a.outbox = append(a.outbox, lf.Observed)
+			// on garde lf en mémoire un peu plus longtemps (OK)
+		}
+	}
+	return errs
+}
+
+func (a *Agent) samplerLoop() {
+	iv := a.cfg.SampleIntervalMS
+	if iv < 250 {
+		iv = 250
+	}
+	t := time.NewTicker(time.Duration(iv) * time.Millisecond)
+	defer t.Stop()
+	for range t.C {
+		_ = a.sampleOnce(time.Now().UnixMilli())
+	}
+}
+
+func (a *Agent) spoolAppend(batch []Observed) {
+	if a.cfg.SpoolPath == "" || len(batch) == 0 {
+		return
+	}
+	if a.cfg.SpoolMaxMB <= 0 {
+		a.cfg.SpoolMaxMB = 10
+	}
+	// rotation simple sur taille
+	if fi, err := os.Stat(a.cfg.SpoolPath); err == nil && fi.Size() > int64(a.cfg.SpoolMaxMB)*1024*1024 {
+		_ = os.WriteFile(a.cfg.SpoolPath, nil, 0600)
+	}
+	// format gob: [][]Observed (append)
+	var batches [][]Observed
+	if b, err := os.ReadFile(a.cfg.SpoolPath); err == nil && len(b) > 0 {
+		_ = gob.NewDecoder(bytes.NewReader(b)).Decode(&batches)
+	}
+	batches = append(batches, batch)
+	var buf bytes.Buffer
+	_ = gob.NewEncoder(&buf).Encode(batches)
+	_ = os.WriteFile(a.cfg.SpoolPath, buf.Bytes(), 0600)
+}
+
+func (a *Agent) tryReplaySpool() {
+	if a.cfg.SpoolPath == "" {
+		return
+	}
+	b, err := os.ReadFile(a.cfg.SpoolPath)
+	if err != nil || len(b) == 0 {
+		return
+	}
+	var batches [][]Observed
+	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&batches); err != nil {
+		return
+	}
+	for _, batch := range batches {
+		if ok := a.postObserved(batch); !ok {
+			// on s'arrête si ça échoue, on retentera plus tard
+			return
+		}
+	}
+	// purge si tout est OK
+	_ = os.WriteFile(a.cfg.SpoolPath, nil, 0600)
+}
+
+func (a *Agent) postObserved(obs []Observed) bool {
+	ip4, ip6 := gatherIPs(a.cfg.PreferredIface)
+	pl := map[string]any{
+		"host":     a.cfg.HostID,
+		"tags":     a.cfg.Tags,
+		"ts":       time.Now().Unix(),
+		"ip4":      ip4,
+		"ip6":      ip6,
+		"observed": obs,
+	}
+	b, _ := json.Marshal(pl)
+	req, _ := http.NewRequest("POST", strings.TrimRight(a.cfg.ServerURL, "/")+"/ingest", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.cfg.AuthToken)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		fmt.Println("ingest error:", err)
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+func (a *Agent) uploaderLoop() {
+	sec := a.cfg.UploadIntervalSec
+	if sec <= 0 {
+		sec = a.cfg.IntervalSec
+		if sec <= 0 {
+			sec = 15
+		}
+	}
+	t := time.NewTicker(time.Duration(sec) * time.Second)
+	defer t.Stop()
+	for range t.C {
+		// snapshot & clear
+		a.mu.Lock()
+		batch := make([]Observed, len(a.outbox))
+		copy(batch, a.outbox)
+		a.outbox = a.outbox[:0]
+		a.mu.Unlock()
+
+		// rejouer d'abord le spool si présent
+		a.tryReplaySpool()
+
+		if len(batch) == 0 {
+			continue
+		}
+		if ok := a.postObserved(batch); !ok {
+			a.spoolAppend(batch)
+		}
+	}
 }
 
 func gatherIPs(prefer string) (ip4, ip6 string) {
@@ -235,46 +477,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ssBin := cfg.SSPath
-	if ssBin == "" {
-		ssBin = "ss"
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	for {
-		errs := []string{}
-		out, err := exec.Command(ssBin, "-H", "-tuapn").Output()
-		if err != nil {
-			errs = append(errs, "ss failed: "+err.Error())
-		}
-		conns := parseSS(out)
-		ip4, ip6 := gatherIPs(cfg.PreferredIface)
-
-		pl := Payload{
-			Host:   cfg.HostID,
-			Tags:   cfg.Tags,
-			TS:     time.Now().Unix(),
-			Conns:  conns,
-			IP4:    ip4,
-			IP6:    ip6,
-			Errors: errs,
-		}
-
-		b, _ := json.Marshal(pl)
-		req, _ := http.NewRequest("POST", strings.TrimRight(cfg.ServerURL, "/")+"/ingest", bytes.NewReader(b))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
-
-		if resp, err := client.Do(req); err != nil {
-			fmt.Println("ingest error:", err)
-		} else {
-			resp.Body.Close()
-		}
-
-		interval := cfg.IntervalSec
-		if interval < 5 {
-			interval = 5
-		}
-		time.Sleep(time.Duration(interval) * time.Second)
-	}
+	agent := NewAgent(cfg)
+	go agent.samplerLoop()
+	agent.uploaderLoop()
 }
+
