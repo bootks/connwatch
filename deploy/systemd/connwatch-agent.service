@@ -1,21 +1,51 @@
 [Unit]
-Description=Connwatch Agent
-After=network-online.target
+Description=Connwatch Agent (zero-loss sampler+batch)
 Wants=network-online.target
+After=network-online.target
 
 [Service]
+Type=simple
 User=connwatch
 Group=connwatch
+
+# Le binaire et la conf
 ExecStart=/usr/local/bin/connwatch-agent /etc/connwatch-agent.yaml
-Restart=always
-RestartSec=5
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-SystemCallFilter=@system-service
+
+# Redémarrage
+Restart=on-failure
+RestartSec=3s
+
+# PATH incluant le ss "capable" si tu l'installes en /usr/local/lib/connwatch/ss
+Environment="PATH=/usr/local/lib/connwatch:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+
+# Capabilities réseaux pour permettre à ss/netlink de fonctionner côté non-root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+# Sandbox raisonnable (autorise l'écriture dans /var/lib/connwatch pour le spool)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Écriture état/spool
+StateDirectory=connwatch
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/connwatch
+
+# Limites
+LimitNOFILE=8192
 
 [Install]
 WantedBy=multi-user.target
