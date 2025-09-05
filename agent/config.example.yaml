@@ -1,7 +1,18 @@
-# connwatch agent configuration
-server_url: "http://SERVER_IP_OR_DNS:8080"
+server_url: "http://127.0.0.1:8080"
 auth_token: "change-me"
-host_id: "auto"
-tags: ["home","linux"]
-interval_sec: 15
+host_id: auto
+tags: ["linux"]
+
+# Zéro-perte
+sample_interval_ms: 1000
+upload_interval_sec: 15
+stale_grace_ms: 1500
+
+# Spool en cas d'indispo serveur
+spool_path: "/var/lib/connwatch/agent.spool"
+spool_max_mb: 10
+
 preferred_iface: ""
+ss_path: ""
+#/usr/local/lib/connwatch/ss"
+# si tu as mis le ss "capable"
